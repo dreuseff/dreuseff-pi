@@ -1,0 +1,84 @@
+name: Sync fork from upstream
+
+on:
+  schedule:
+    - cron: '37 3 * * 2,5' # Tuesday and Friday at 03:37 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      UPSTREAM_REPO: earendil-works/pi
+      BRANCH: main
+
+    steps:
+      - name: Checkout fork branch
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.BRANCH }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Show workflow context
+        run: |
+          echo "Fork repo: ${GITHUB_REPOSITORY}"
+          echo "Upstream repo: ${UPSTREAM_REPO}"
+          echo "Branch: ${BRANCH}"
+
+      - name: Add upstream remote
+        run: |
+          set -euo pipefail
+
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git remote -v
+
+      - name: Fetch upstream branch
+        run: |
+          set -euo pipefail
+          git fetch --no-tags upstream "${BRANCH}"
+
+      - name: Check whether fork is behind upstream
+        id: check
+        run: |
+          set -euo pipefail
+
+          behind_by=$(git rev-list --count "HEAD..upstream/${BRANCH}")
+          echo "behind_by=${behind_by}" >> "$GITHUB_OUTPUT"
+
+          if [ "${behind_by}" -gt 0 ]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "Fork is behind upstream by ${behind_by} commit(s)."
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "Fork is already up to date."
+          fi
+
+      - name: Add summary
+        run: |
+          {
+            echo "## Fork sync status"
+            echo ""
+            echo "- Fork repo: \`${GITHUB_REPOSITORY}\`"
+            echo "- Upstream repo: \`${UPSTREAM_REPO}\`"
+            echo "- Branch: \`${BRANCH}\`"
+            echo "- behind_by: \`${{ steps.check.outputs.behind_by }}\`"
+            echo "- Needs sync: \`${{ steps.check.outputs.has_changes }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Sync fork branch
+        if: steps.check.outputs.has_changes == 'true'
+        run: |
+          set -euo pipefail
+          gh repo sync "${GITHUB_REPOSITORY}" --source "${UPSTREAM_REPO}" --branch "${BRANCH}"
+
+      - name: No sync needed
+        if: steps.check.outputs.has_changes != 'true'
+        run: echo "No upstream changes to sync."
